@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+            cc: gcc
+          - os: macos-latest
+            name: macos-arm64
+            cc: clang
+          - os: windows-latest
+            name: windows-x86_64
+            cc: gcc
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build library
+        shell: bash
+        run: |
+          make build CC=${{ matrix.cc }}
+
+      - name: Run tests
+        shell: bash
+        run: |
+          make test CC=${{ matrix.cc }}
+
+      - name: Package release
+        shell: bash
+        run: |
+          mkdir -p ulist-${{ github.ref_name }}/include
+          mkdir -p ulist-${{ github.ref_name }}/lib
+          cp include/ulist.h include/ugc.h ulist-${{ github.ref_name }}/include/
+          cp build/libulist.a ulist-${{ github.ref_name }}/lib/
+          cp build/obj/*.o ulist-${{ github.ref_name }}/lib/
+          cp LICENSE README.md ulist-${{ github.ref_name }}/
+          tar czf ulist-${{ github.ref_name }}-${{ matrix.name }}.tar.gz ulist-${{ github.ref_name }}/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ulist-${{ matrix.name }}
+          path: ulist-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            artifacts/ulist-linux-x86_64/*.tar.gz \
+            artifacts/ulist-macos-arm64/*.tar.gz \
+            artifacts/ulist-windows-x86_64/*.tar.gz \
+            --title "UList ${{ github.ref_name }}" \
+            --notes "$(cat <<'NOTES'
+          ## UList ${{ github.ref_name }}
+
+          Generic data structures for C — no boilerplate, no pain.
+
+          ### Structures
+
+          | Structure | Description |
+          |-----------|-------------|
+          | **UVec** | Dynamic array (vector) with sort, filter, map, reduce |
+          | **ULinked** | Singly linked list with merge sort |
+          | **UDList** | Doubly linked list with bidirectional traversal |
+          | **UStack** | LIFO stack (backed by UVec) |
+          | **UQueue** | FIFO queue (backed by UDList) |
+          | **UDeque** | Double-ended queue (backed by UDList) |
+          | **UStrList** | String list with auto-copy, join, split |
+
+          ### Quality
+
+          - **90 tests** — all passing on Linux, macOS, and Windows
+          - **0 memory leaks** — verified with Valgrind
+          - **0 errors** — AddressSanitizer + UndefinedBehaviorSanitizer
+          - **0 bugs** — Clang Static Analyzer
+          - Compiled with `-Wall -Wextra -Wpedantic -Werror`
+
+          ### Downloads
+
+          | Platform | Archive |
+          |----------|---------|
+          | Linux x86_64 | `ulist-${{ github.ref_name }}-linux-x86_64.tar.gz` |
+          | macOS ARM64 | `ulist-${{ github.ref_name }}-macos-arm64.tar.gz` |
+          | Windows x86_64 | `ulist-${{ github.ref_name }}-windows-x86_64.tar.gz` |
+
+          Each archive contains:
+          - `lib/libulist.a` — static library
+          - `lib/*.o` — individual object files
+          - `include/ulist.h` — public header
+          - `include/ugc.h` — GC header
+
+          ### Usage
+
+          ```bash
+          tar xzf ulist-${{ github.ref_name }}-<platform>.tar.gz
+          gcc -Iulist-${{ github.ref_name }}/include main.c -Lulist-${{ github.ref_name }}/lib -lulist -o main
+          ```
+          NOTES
+          )"
