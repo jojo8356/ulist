@@ -1,30 +1,50 @@
 #include "ulist.h"
 #include "ugc.h"
+#include "ugc_alloc.h"
 
 /* ============================================================
  * ULinked — Liste chaînée simple
  * ============================================================ */
 
-ULinked *ulinked_new(size_t elem_size)
+static ULinked *ulinked_new_impl(size_t elem_size, int gc)
 {
-    ULinked *list = xmalloc(sizeof(ULinked));
+    ULinked *list = ugc_xcalloc(gc, 1, sizeof(ULinked));
     list->head = NULL;
     list->elem_size = elem_size;
     list->size = 0;
-    list->gc_managed = 0;
+    list->gc_managed = gc;
     return list;
+}
+
+ULinked *ulinked_new(size_t elem_size)
+{
+    return ulinked_new_impl(elem_size, 0);
 }
 
 ULinked *ulinked_new_gc(size_t elem_size)
 {
-    ULinked *list = ulinked_new(elem_size);
-    list->gc_managed = 1;
-    return list;
+    ugc_auto_init();
+    /* Toutes les allocations internes seront trackées ; la liste
+     * vit tant qu'une variable la référence (scan de la pile) —
+     * sinon ugc_collect() la réclame automatiquement. */
+    return ulinked_new_impl(elem_size, 1);
 }
 
 void ulinked_free(ULinked *list)
 {
     if (!list) return;
+    if (list->gc_managed) {
+        /* Réclamation immédiate — sinon le GC s'en chargerait */
+        ULinkedNode *cur = list->head;
+        while (cur) {
+            ULinkedNode *next = cur->next;
+            ugc_free(cur->data);
+            ugc_free(cur);
+            cur = next;
+        }
+        ugc_free(list);
+        return;
+    }
     ULinkedNode *cur = list->head;
     while (cur) {
         ULinkedNode *next = cur->next;
@@ -37,8 +57,8 @@ void ulinked_free(ULinked *list)
 
 static ULinkedNode *ulinked_make_node(const ULinked *list, const void *elem)
 {
-    ULinkedNode *node = xmalloc(sizeof(ULinkedNode));
-    node->data = xmalloc(list->elem_size);
+    ULinkedNode *node = ugc_xcalloc(list->gc_managed, 1, sizeof(ULinkedNode));
+    node->data = ugc_xmalloc(list->gc_managed, list->elem_size);
     memcpy(node->data, elem, list->elem_size);
     node->next = NULL;
     return node;
@@ -89,8 +109,8 @@ int ulinked_pop(ULinked *list)
     if (!list || !list->head) return 0;
     ULinkedNode *old = list->head;
     list->head = old->next;
-    free(old->data);
-    free(old);
+    ugc_xfree(list->gc_managed, old->data);
+    ugc_xfree(list->gc_managed, old);
     list->size--;
     return 1;
 }
@@ -105,8 +125,8 @@ int ulinked_remove(ULinked *list, int index)
         prev = prev->next;
     ULinkedNode *target = prev->next;
     prev->next = target->next;
-    free(target->data);
-    free(target);
+    ugc_xfree(list->gc_managed, target->data);
+    ugc_xfree(list->gc_managed, target);
     list->size--;
     return 1;
 }
@@ -117,8 +137,8 @@ void ulinked_clear(ULinked *list)
     ULinkedNode *cur = list->head;
     while (cur) {
         ULinkedNode *next = cur->next;
-        free(cur->data);
-        free(cur);
+        ugc_xfree(list->gc_managed, cur->data);
+        ugc_xfree(list->gc_managed, cur);
         cur = next;
     }
     list->head = NULL;

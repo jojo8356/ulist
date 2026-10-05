@@ -26,14 +26,14 @@ TEST_BIN  = $(BUILDDIR)/test_runner
 CFLAGS_BASE  = -std=c11 -Wall -Wextra -Wpedantic -Werror -I$(INCDIR)
 CFLAGS_REL   = $(CFLAGS_BASE) -O2
 CFLAGS_DBG   = $(CFLAGS_BASE) -g -O0
-CFLAGS_ASAN  = $(CFLAGS_DBG) -fsanitize=address,undefined -fno-omit-frame-pointer
+CFLAGS_ASAN  = $(CFLAGS_DBG) -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-address-use-after-scope
 LDFLAGS_ASAN = -fsanitize=address,undefined
 
 # ============================================================
 # Targets
 # ============================================================
 
-.PHONY: build debug test test-asan test-valgrind analyze clean check
+.PHONY: build debug test test-asan test-boehm test-valgrind analyze clean check
 
 # --- Build (release) ---
 build: CFLAGS = $(CFLAGS_REL)
@@ -67,6 +67,30 @@ test-asan:
 	@echo ""
 	@echo "=== Running tests (ASan + UBSan) ==="
 	@$(BUILDDIR)/test_asan
+
+# --- Test avec le backend Boehm-Demers-Weiser (libgc) ---
+# Remplace le GC interne par le GC conservateur éprouvé de Boehm.
+# Prérequis : libgc compilée localement (sources gc-8.x) avec les flags :
+#   -DGC_NOT_DLL -DALL_INTERIOR_POINTERS -DNO_EXECUTE_PERMISSION
+#   -DENABLE_DISCLAIM   <- requis par le comptage exact ugc_count/bytes
+# puis  ar rcs libgc.a *.o
+# Variables surchargées :
+#   make test-boehm BOEHM_DIR=/chemin/prefixe
+# avec $(BOEHM_DIR)/include/gc.h et $(BOEHM_DIR)/lib/libgc.a.
+# Volontairement SANS ASan/LSan : le tas interne de libgc vit jusqu'à
+# la fin du processus (serait rapporté comme leak à la sortie).
+BOEHM_DIR  ?= $(HOME)/.local/bdwgc
+BOEHM_INC  ?= $(BOEHM_DIR)/include
+BOEHM_LIBA ?= $(BOEHM_DIR)/lib/libgc.a
+BOEHM_SRCS  = $(filter-out $(SRCDIR)/ugc.c,$(SRCS)) $(SRCDIR)/backends/ugc_boehm.c
+
+test-boehm: CFLAGS = $(CFLAGS_DBG)
+test-boehm:
+	@mkdir -p $(BUILDDIR)
+	$(CC) $(CFLAGS) -I$(BOEHM_INC) $(BOEHM_SRCS) $(TEST_SRCS) $(BOEHM_LIBA) -o $(BUILDDIR)/test_boehm
+	@echo ""
+	@echo "=== Running tests (backend Boehm-Demers-Weiser) ==="
+	@$(BUILDDIR)/test_boehm
 
 # --- Test with Valgrind ---
 test-valgrind: CFLAGS = $(CFLAGS_DBG)

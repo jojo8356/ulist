@@ -1,5 +1,6 @@
 #include "utest.h"
 #include "ulist.h"
+#include "ugc.h"
 
 /* Include all test files (single compilation unit) */
 #include "test_uvec.c"
@@ -9,6 +10,7 @@
 #include "test_uqueue.c"
 #include "test_udeque.c"
 #include "test_ustrlist.c"
+#include "test_ugc.c"
 
 int main(void)
 {
@@ -125,6 +127,42 @@ int main(void)
     TEST(test_ustrlist_free_null);
     TEST(test_ustrlist_copy_semantics);
     TEST(test_ustrlist_grow);
+
+    /* UGC — Garbage Collector */
+    printf("\n--- UGC ---\n");
+    TEST(test_ugc_lifecycle);
+    TEST(test_ugc_malloc_free_accounting);
+    TEST(test_ugc_calloc_zeroed);
+    TEST(test_ugc_realloc_tracked);
+    TEST(test_ugc_untracked_passthrough);
+    TEST(test_ugc_young_protection);
+    TEST(test_ugc_auto_free_after_scope);
+    TEST(test_ugc_root_protects);
+    TEST(test_ugc_remove_root);
+    TEST(test_ugc_root_null_slot);
+    TEST(test_ugc_reachability_chain);
+    TEST(test_ugc_cycle_collected);
+    TEST(test_ugc_interior_pointer);
+    TEST(test_ugc_realloc_preserves_object);
+    TEST(test_ugc_deep_chain_iterative);
+    TEST(test_ugc_threshold_autocollect);
+    TEST(test_ugc_shutdown_reclaims_all);
+    TEST(test_ugc_stack_scan_toggle);
+    TEST(test_ugc_uvec_gc);
+    TEST(test_ugc_uvec_holds_gc_pointers);
+    TEST(test_ugc_ulinked_gc);
+    TEST(test_ugc_udlist_gc);
+    TEST(test_ugc_ustack_gc);
+    TEST(test_ugc_uqueue_gc);
+    TEST(test_ugc_udeque_gc);
+    TEST(test_ugc_ustrlist_gc);
+    TEST(test_ugc_plain_structures_unaffected);
+    TEST(test_ugc_stress_autocollect);
+    TEST(test_ugc_verbose_and_dump);
+
+    /* Purge tout résidu GC (objets détachés par les tests *_gc) pour
+     * que les rapports ASan/Valgrind restent propres */
+    ugc_shutdown();
 
     TEST_REPORT();
     return TEST_EXIT_CODE();

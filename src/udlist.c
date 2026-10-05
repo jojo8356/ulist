@@ -1,31 +1,51 @@
 #include "ulist.h"
 #include "ugc.h"
+#include "ugc_alloc.h"
 
 /* ============================================================
  * UDList — Liste chaînée double
  * ============================================================ */
 
-UDList *udlist_new(size_t elem_size)
+static UDList *udlist_new_impl(size_t elem_size, int gc)
 {
-    UDList *list = xmalloc(sizeof(UDList));
+    UDList *list = ugc_xcalloc(gc, 1, sizeof(UDList));
     list->head = NULL;
     list->tail = NULL;
     list->elem_size = elem_size;
     list->size = 0;
-    list->gc_managed = 0;
+    list->gc_managed = gc;
     return list;
+}
+
+UDList *udlist_new(size_t elem_size)
+{
+    return udlist_new_impl(elem_size, 0);
 }
 
 UDList *udlist_new_gc(size_t elem_size)
 {
-    UDList *list = udlist_new(elem_size);
-    list->gc_managed = 1;
-    return list;
+    ugc_auto_init();
+    /* Toutes les allocations internes seront trackées ; la liste
+     * vit tant qu'une variable la référence (scan de la pile) —
+     * sinon ugc_collect() la réclame automatiquement. */
+    return udlist_new_impl(elem_size, 1);
 }
 
 void udlist_free(UDList *list)
 {
     if (!list) return;
+    if (list->gc_managed) {
+        /* Réclamation immédiate — sinon le GC s'en chargerait */
+        UDListNode *cur = list->head;
+        while (cur) {
+            UDListNode *next = cur->next;
+            ugc_free(cur->data);
+            ugc_free(cur);
+            cur = next;
+        }
+        ugc_free(list);
+        return;
+    }
     UDListNode *cur = list->head;
     while (cur) {
         UDListNode *next = cur->next;
@@ -38,8 +58,8 @@ void udlist_free(UDList *list)
 
 static UDListNode *udlist_make_node(const UDList *list, const void *elem)
 {
-    UDListNode *node = xmalloc(sizeof(UDListNode));
-    node->data = xmalloc(list->elem_size);
+    UDListNode *node = ugc_xcalloc(list->gc_managed, 1, sizeof(UDListNode));
+    node->data = ugc_xmalloc(list->gc_managed, list->elem_size);
     memcpy(node->data, elem, list->elem_size);
     node->next = NULL;
     node->prev = NULL;
@@ -137,8 +157,8 @@ int udlist_pop_front(UDList *list)
         list->head->prev = NULL;
     else
         list->tail = NULL;
-    free(old->data);
-    free(old);
+    ugc_xfree(list->gc_managed, old->data);
+    ugc_xfree(list->gc_managed, old);
     list->size--;
     return 1;
 }
@@ -152,8 +172,8 @@ int udlist_pop_back(UDList *list)
         list->tail->next = NULL;
     else
         list->head = NULL;
-    free(old->data);
-    free(old);
+    ugc_xfree(list->gc_managed, old->data);
+    ugc_xfree(list->gc_managed, old);
     list->size--;
     return 1;
 }
@@ -169,8 +189,8 @@ int udlist_remove(UDList *list, int index)
         cur = cur->next;
     cur->prev->next = cur->next;
     cur->next->prev = cur->prev;
-    free(cur->data);
-    free(cur);
+    ugc_xfree(list->gc_managed, cur->data);
+    ugc_xfree(list->gc_managed, cur);
     list->size--;
     return 1;
 }
@@ -181,8 +201,8 @@ void udlist_clear(UDList *list)
     UDListNode *cur = list->head;
     while (cur) {
         UDListNode *next = cur->next;
-        free(cur->data);
-        free(cur);
+        ugc_xfree(list->gc_managed, cur->data);
+        ugc_xfree(list->gc_managed, cur);
         cur = next;
     }
     list->head = NULL;
