@@ -1,5 +1,6 @@
 #include "ulist.h"
 #include "ugc.h"
+#include "ugc_alloc.h"
 
 /* ============================================================
  * UStack — Pile LIFO (backed by UVec)
@@ -15,7 +16,9 @@ UStack *ustack_new(size_t elem_size)
 
 UStack *ustack_new_gc(size_t elem_size)
 {
-    UStack *s = ustack_new(elem_size);
+    ugc_auto_init();
+    UStack *s = ugc_xcalloc(1, 1, sizeof(UStack));
+    s->vec = uvec_new_gc(elem_size); /* interne tracké aussi */
     s->gc_managed = 1;
     return s;
 }
@@ -23,6 +26,12 @@ UStack *ustack_new_gc(size_t elem_size)
 void ustack_free(UStack *s)
 {
     if (!s) return;
+    if (s->gc_managed) {
+        /* Réclamation immédiate — sinon le GC s'en chargerait */
+        uvec_free(s->vec);
+        ugc_free(s);
+        return;
+    }
     uvec_free(s->vec);
     free(s);
 }

@@ -1,5 +1,6 @@
 #include "ulist.h"
 #include "ugc.h"
+#include "ugc_alloc.h"
 
 /* ============================================================
  * UStrList — Liste de strings (copies automatiques)
@@ -10,29 +11,45 @@
 static void ustrlist_grow(UStrList *list)
 {
     list->capacity *= 2;
-    list->data = xrealloc(list->data, (size_t)list->capacity * sizeof(char *));
+    list->data = ugc_xrealloc(list->gc_managed, list->data,
+                              (size_t)list->capacity * sizeof(char *));
+}
+
+static UStrList *ustrlist_new_impl(int gc)
+{
+    UStrList *list = ugc_xcalloc(gc, 1, sizeof(UStrList));
+    list->data = ugc_xcalloc(gc, USTRLIST_INITIAL_CAPACITY, sizeof(char *));
+    list->size = 0;
+    list->capacity = USTRLIST_INITIAL_CAPACITY;
+    list->gc_managed = gc;
+    return list;
 }
 
 UStrList *ustrlist_new(void)
 {
-    UStrList *list = xmalloc(sizeof(UStrList));
-    list->data = xmalloc(USTRLIST_INITIAL_CAPACITY * sizeof(char *));
-    list->size = 0;
-    list->capacity = USTRLIST_INITIAL_CAPACITY;
-    list->gc_managed = 0;
-    return list;
+    return ustrlist_new_impl(0);
 }
 
 UStrList *ustrlist_new_gc(void)
 {
-    UStrList *list = ustrlist_new();
-    list->gc_managed = 1;
-    return list;
+    ugc_auto_init();
+    /* Toutes les allocations internes seront trackées ; la liste
+     * vit tant qu'une variable la référence (scan de la pile) —
+     * sinon ugc_collect() la réclame automatiquement. */
+    return ustrlist_new_impl(1);
 }
 
 void ustrlist_free(UStrList *list)
 {
     if (!list) return;
+    if (list->gc_managed) {
+        /* Réclamation immédiate — sinon le GC s'en chargerait */
+        for (int i = 0; i < list->size; i++)
+            ugc_free(list->data[i]);
+        ugc_free(list->data);
+        ugc_free(list);
+        return;
+    }
     for (int i = 0; i < list->size; i++)
         free(list->data[i]);
     free(list->data);
@@ -43,7 +60,7 @@ void ustrlist_add(UStrList *list, const char *str)
 {
     if (list->size >= list->capacity)
         ustrlist_grow(list);
-    list->data[list->size] = xmalloc(strlen(str) + 1);
+    list->data[list->size] = ugc_xmalloc(list->gc_managed, strlen(str) + 1);
     strcpy(list->data[list->size], str);
     list->size++;
 }
@@ -55,7 +72,7 @@ void ustrlist_insert(UStrList *list, int index, const char *str)
         ustrlist_grow(list);
     for (int i = list->size; i > index; i--)
         list->data[i] = list->data[i - 1];
-    list->data[index] = xmalloc(strlen(str) + 1);
+    list->data[index] = ugc_xmalloc(list->gc_managed, strlen(str) + 1);
     strcpy(list->data[index], str);
     list->size++;
 }
@@ -81,7 +98,7 @@ int ustrlist_empty(const UStrList *list)
 int ustrlist_remove(UStrList *list, int index)
 {
     if (!list || index < 0 || index >= list->size) return 0;
-    free(list->data[index]);
+    ugc_xfree(list->gc_managed, list->data[index]);
     for (int i = index; i < list->size - 1; i++)
         list->data[i] = list->data[i + 1];
     list->size--;
@@ -92,7 +109,7 @@ void ustrlist_clear(UStrList *list)
 {
     if (!list) return;
     for (int i = 0; i < list->size; i++)
-        free(list->data[i]);
+        ugc_xfree(list->gc_managed, list->data[i]);
     list->size = 0;
 }
 

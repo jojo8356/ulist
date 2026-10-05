@@ -1,5 +1,6 @@
 #include "ulist.h"
 #include "ugc.h"
+#include "ugc_alloc.h"
 
 /* ============================================================
  * UDeque — File double (backed by UDList)
@@ -15,7 +16,9 @@ UDeque *udeque_new(size_t elem_size)
 
 UDeque *udeque_new_gc(size_t elem_size)
 {
-    UDeque *d = udeque_new(elem_size);
+    ugc_auto_init();
+    UDeque *d = ugc_xcalloc(1, 1, sizeof(UDeque));
+    d->list = udlist_new_gc(elem_size); /* interne trackée aussi */
     d->gc_managed = 1;
     return d;
 }
@@ -23,6 +26,12 @@ UDeque *udeque_new_gc(size_t elem_size)
 void udeque_free(UDeque *d)
 {
     if (!d) return;
+    if (d->gc_managed) {
+        /* Réclamation immédiate — sinon le GC s'en chargerait */
+        udlist_free(d->list);
+        ugc_free(d);
+        return;
+    }
     udlist_free(d->list);
     free(d);
 }

@@ -323,13 +323,107 @@ udlist_foreach_rev(dl, int, elem)    { printf("%d\n", *elem); }
 ustrlist_foreach(sl, s)              { printf("%s\n", s); }
 ```
 
+## Garbage Collector (opt-in)
+
+UList ships **UGC**, a **conservative** mark-and-sweep garbage collector,
+in the spirit of the big GCs (Java, Go, Boehm-Demers-Weiser): **when a
+variable stops being used, its memory is freed automatically** — no `free()`.
+
+### Zero-free structures
+
+Every structure has a `*_new_gc()` variant. The stack is scanned at each
+collection: **any local variable pointing to a tracked object keeps it
+alive**, along with its whole content graph.
+
+```c
+#include "ulist.h"
+#include "ugc.h"
+
+int main(void)
+{
+    ugc_init();                             // early = best stack capture
+
+    {
+        UVec *v = uvec_new_gc(sizeof(int)); // tracked, no free needed
+        for (int i = 0; i < 1000; i++)
+            uvec_add_val(v, i);
+        ugc_collect();                      // v lives on the stack: survives
+    }                                       // v is no longer referenced
+
+    ugc_collect();                          // struct + buffer reclaimed
+    ugc_shutdown();                         // frees whatever remains
+}
+```
+
+### Tracked raw allocations
+
+```c
+char *s = ugc_calloc(64, 1);        // tracked; the local var anchors it
+ugc_collect();                       // survives (young + on-stack)
+s = NULL;                            // no longer referenced
+ugc_collect();                       // reclaimed — no free() needed
+
+/* GLOBAL variables are NOT stack-scanned: anchor them explicitly */
+static char *g_cache;
+ugc_add_root((void **)&g_cache);
+...
+ugc_remove_root((void **)&g_cache);
+```
+
+### How it works
+
+- **Automatic roots**: the stack is scanned word by word at each collection
+  (registers are flushed first, like Boehm GC does). Any local pointing to
+  a tracked block — even via an interior pointer — keeps it alive, along
+  with everything reachable from it (conservative marking).
+- **Explicit roots** for globals/statics: `ugc_add_root(&ptr)` /
+  `ugc_remove_root(&ptr)`.
+- **Young objects** are protected for one collection, giving you a window
+  to anchor them.
+- **Collections**: manual via `ugc_collect()`, or automatic when
+  allocations exceed `ugc_set_threshold()` (with `ugc_set_auto(1)`).
+  The threshold is adaptive to avoid thrashing on live heaps.
+- **Two interchangeable engines** behind the same `ugc.h` API —
+  query with `ugc_backend_name()`:
+  - `"internal"` (default): hand-rolled, zero-dependency, exact accounting
+    — this is what CI builds and tests (`make test`, `make test-asan`).
+  - `"boehm"`: the battle-tested Boehm-Demers-Weiser GC (libgc, used by
+    Mono/Guile/GCJ) drives the collections — see below.
+- **Stats & debug**: `ugc_count()`, `ugc_bytes()`, `ugc_root_count()`,
+  `ugc_collections()`, `ugc_dump()`, `ugc_set_verbose()`.
+- **Iterative marker**: no recursion — deep chains can't overflow the stack.
+
+### Boehm-Demers-Weiser backend (optional)
+
+```bash
+# 1) Build libgc locally (gc-8.x sources): statically disable threading is
+#    fine; UGC accounting requires the DISCLAIMER API:
+#      cc -O2 -DGC_NOT_DLL -DALL_INTERIOR_POINTERS -DNO_EXECUTE_PERMISSION \
+#         -DENABLE_DISCLAIM -Iinclude -c *.c && ar rcs libgc.a *.o
+# 2) Point the Makefile at your prefix (needs include/gc.h + lib/libgc.a):
+make test-boehm BOEHM_DIR=/path/to/prefix
+```
+
+The Boehm backend (`src/backends/ugc_boehm.c`) maps the same API onto
+libgc: same tracked allocations, same exact `ugc_count()`/`ugc_bytes()`
+(via a 16-byte header + a per-object disclaim hook), same roots, same
+explicit `ugc_collect()`. Differences, inherited from the engine itself:
+no young-object grace window (garbage may be reclaimed at the very first
+collection), stack-scan toggles are no-ops, and the suite is run without
+ASan/LSan (libgc keeps its heap until process exit).
+
+Rules of thumb: anchor objects before losing the last pointer to them; only
+store tracked pointers inside other tracked blocks (or roots); `ugc_free()`
+on an untracked pointer behaves like `free()`.
+
 ## Build Targets
 
 ```bash
 make build          # build libulist.a (release, -O2)
 make debug          # build libulist.a (debug, -g -O0)
-make test           # run all 90 tests
+make test           # run all 119 tests
 make test-asan      # tests with AddressSanitizer + UBSan
+make test-boehm    # same 119 tests on the Boehm-Demers-Weiser backend
 make test-valgrind  # tests with Valgrind (leak check)
 make analyze        # Clang Static Analyzer
 make check          # all of the above (asan + valgrind + analyze)
@@ -350,7 +444,7 @@ make demo           # compile and run example
 ulist/
 ├── include/
 │   ├── ulist.h        # public header (all structures + macros)
-│   └── ugc.h          # GC header (stubs for now)
+│   └── ugc.h          # public GC header
 ├── src/
 │   ├── uvec.c         # UVec implementation
 │   ├── ulinked.c      # ULinked implementation
@@ -359,17 +453,21 @@ ulist/
 │   ├── uqueue.c        # UQueue implementation
 │   ├── udeque.c        # UDeque implementation
 │   ├── ustrlist.c      # UStrList implementation
-│   └── ugc.c           # GC stubs
+│   ├── ugc.c           # conservative mark-and-sweep GC (internal backend)
+│   ├── ugc_alloc.h     # internal alloc router (GC vs classic)
+│   └── backends/
+│       └── ugc_boehm.c # optional Boehm-Demers-Weiser backend (libgc)
 ├── tests/
 │   ├── utest.h         # mini test framework
 │   ├── test_main.c     # test runner
 │   ├── test_uvec.c     # UVec tests (24)
 │   ├── test_ulinked.c  # ULinked tests (12)
-│   ├── test_udlist.c   # UDList tests (14)
+│   ├── test_udlist.c   # UDList tests (13)
 │   ├── test_ustack.c   # UStack tests (8)
 │   ├── test_uqueue.c   # UQueue tests (8)
 │   ├── test_udeque.c   # UDeque tests (8)
-│   └── test_ustrlist.c # UStrList tests (16)
+│   ├── test_ustrlist.c # UStrList tests (17)
+│   └── test_ugc.c      # UGC tests (29)
 ├── examples/
 │   └── demo.c
 ├── Makefile

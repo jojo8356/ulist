@@ -1,5 +1,6 @@
 #include "ulist.h"
 #include "ugc.h"
+#include "ugc_alloc.h"
 
 /* ============================================================
  * UQueue — File FIFO (backed by UDList)
@@ -15,7 +16,9 @@ UQueue *uqueue_new(size_t elem_size)
 
 UQueue *uqueue_new_gc(size_t elem_size)
 {
-    UQueue *q = uqueue_new(elem_size);
+    ugc_auto_init();
+    UQueue *q = ugc_xcalloc(1, 1, sizeof(UQueue));
+    q->list = udlist_new_gc(elem_size); /* interne trackée aussi */
     q->gc_managed = 1;
     return q;
 }
@@ -23,6 +26,12 @@ UQueue *uqueue_new_gc(size_t elem_size)
 void uqueue_free(UQueue *q)
 {
     if (!q) return;
+    if (q->gc_managed) {
+        /* Réclamation immédiate — sinon le GC s'en chargerait */
+        udlist_free(q->list);
+        ugc_free(q);
+        return;
+    }
     udlist_free(q->list);
     free(q);
 }

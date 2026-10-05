@@ -1,5 +1,6 @@
 #include "ulist.h"
 #include "ugc.h"
+#include "ugc_alloc.h"
 
 /* ============================================================
  * UVec — Tableau dynamique (Vector / ArrayList)
@@ -8,32 +9,50 @@
 static void uvec_grow(UVec *v)
 {
     v->capacity *= 2;
-    v->data = xrealloc(v->data, (size_t)v->capacity * v->elem_size);
+    v->data = ugc_xrealloc(v->gc_managed, v->data,
+                           (size_t)v->capacity * v->elem_size);
 }
 
 /* --- Création / Destruction --- */
 
-UVec *uvec_new(size_t elem_size)
+static UVec *uvec_new_impl(size_t elem_size, int gc)
 {
-    UVec *v = xmalloc(sizeof(UVec));
-    v->data = xmalloc(UVEC_INITIAL_CAPACITY * elem_size);
+    /* calloc : le scanner conservateur du GC peut lire la structure
+     * à tout moment — tous ses champs doivent être initialisés */
+    UVec *v = ugc_xcalloc(gc, 1, sizeof(UVec));
+    v->data = ugc_xcalloc(gc, UVEC_INITIAL_CAPACITY, elem_size);
     v->elem_size = elem_size;
     v->size = 0;
     v->capacity = UVEC_INITIAL_CAPACITY;
-    v->gc_managed = 0;
+    v->gc_managed = gc;
     return v;
+}
+
+UVec *uvec_new(size_t elem_size)
+{
+    return uvec_new_impl(elem_size, 0);
 }
 
 UVec *uvec_new_gc(size_t elem_size)
 {
-    UVec *v = uvec_new(elem_size);
-    v->gc_managed = 1;
-    return v;
+    ugc_auto_init();
+    /* Toutes les allocations internes seront trackées. La structure
+     * est gardée en vie par les variables qui la référencent (le GC
+     * scanne la pile) — pas besoin de free() : dès qu'elle n'est
+     * plus utilisée, ugc_collect() la réclame avec tout son contenu. */
+    return uvec_new_impl(elem_size, 1);
 }
 
 void uvec_free(UVec *v)
 {
     if (!v) return;
+    if (v->gc_managed) {
+        /* Réclamation immédiate (détrackée) — sans free(), le GC
+         * s'en chargerait automatiquement au prochain collect */
+        ugc_free(v->data);
+        ugc_free(v);
+        return;
+    }
     free(v->data);
     free(v);
 }
